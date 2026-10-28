@@ -1,0 +1,88 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: northwharf
+      POSTGRES_PASSWORD: northwharf
+      POSTGRES_DB: northwharf
+    ports:
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - northwharf-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U northwharf -d northwharf"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  auth0:
+    image: public.ecr.aws/primaassicurazioni/localauth0:0.9.1
+    ports:
+      - "${AUTH0_HOST_PORT:-3000}:3000"
+    environment:
+      LOCALAUTH0_CONFIG: |
+        issuer = "https://auth.northwharf.local/"
+        subject = "auth0|ada.north"
+
+        [user_info]
+        subject = "auth0|ada.north"
+        name = "Ada North"
+        given_name = "Ada"
+        family_name = "North"
+        nickname = "ada"
+        locale = "en-GB"
+        email = "ada.north@northwharf.example"
+        email_verified = true
+
+        [[audience]]
+        name = "https://mcp.northwharf.local"
+        permissions = [
+          "accounts:read",
+          "transfers:write",
+          "expenses:read",
+          "expenses:write",
+          "invoices:read",
+          "invoices:pay",
+          "cards:read",
+          "cards:manage",
+          "treasury:read"
+        ]
+
+        [http]
+        port = 3000
+
+        [https]
+        port = 3001
+    healthcheck:
+      test: ["CMD", "/localauth0", "healthcheck"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      DATABASE_URL: postgres://northwharf:northwharf@postgres:5432/northwharf
+      AUTH0_ISSUER: https://auth.northwharf.local/
+      AUTH0_AUDIENCE: https://mcp.northwharf.local
+      AUTH0_JWKS_URL: http://auth0:3000/.well-known/jwks.json
+      AUTH0_BASE_URL: http://auth0:3000
+      AUTH0_OWNER_SUBJECT: auth0|ada.north
+    depends_on:
+      postgres:
+        condition: service_healthy
+      auth0:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s
+
+volumes:
+  northwharf-pg:
