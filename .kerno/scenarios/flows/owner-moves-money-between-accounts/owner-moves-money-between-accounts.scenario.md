@@ -1,0 +1,32 @@
+<!-- generated from plan.json — do not edit; re-run kerno_endpoint_test to regenerate -->
+
+## The owner moves a small GBP amount between two of her organization's accounts and sees the new balances
+**Kind:** HAPPY_PATH | **Actor:** Ada North, the seeded owner of Northwharf Ltd (subject `auth0|6728f0a1b2c3d4e5f6789012`) | **Scope:** FLOW owner-moves-money-between-accounts (TOOL list_accounts → TOOL create_transfer → TOOL list_accounts)
+### Preconditions
+- The Northwharf MCP server is reachable at the SUT base URL and answers `tools/call` requests.
+- An access token for Ada North is minted via `AuthClient.getTokenByPassword` (with the `https`→`http` `customFetch` rewrite for the local issuer) and carries `accounts:read` and `transfers:write`.
+- The seed is loaded: the GBP operating account `10000000-0000-4000-8000-000000000021` and the GBP tax reserve `10000000-0000-4000-8000-000000000022` both exist in organization `10000000-0000-4000-8000-000000000001` with currency `GBP`, and the operating account's balance exceeds the small amount this run moves.
+### Trigger
+MCP `tools/call` for `create_transfer` with `{ fromAccountId: "10000000-0000-4000-8000-000000000021", toAccountId: "10000000-0000-4000-8000-000000000022", amountMinor: <small positive integer>, description: "flow-transfer <uuid>" }`, sent as `Authorization: Bearer <Ada's access token>`, sandwiched between a `list_accounts` call before and a `list_accounts` call after.
+### Main success scenario
+1. `TOOL list_accounts` — call it with Ada's bearer token and record the pre-move `balanceMinor` of the GBP operating account and of the GBP tax reserve from the returned `accounts` array.
+2. `TOOL create_transfer` — move the chosen small positive `amountMinor` from the operating account to the tax reserve with the unique per-run `description`; record the returned `transferGroupId`.
+3. `TOOL list_accounts` — call it again with the same token and read the post-move `accounts` array; this is the step the flow is about.
+### Postconditions
+- Step 1 (`list_accounts`, fixture): the call succeeds — the MCP result is not an error (`isError` is not true) and its parsed `accounts` array contains one entry for `10000000-0000-4000-8000-000000000021` and one for `10000000-0000-4000-8000-000000000022`, each with a numeric `balanceMinor`, which are the values later steps consume.
+- Step 2 (`create_transfer`, fixture): the call succeeds — the MCP result is not an error — and its parsed payload carries `amountMinor` equal to the amount sent, `currency` `"GBP"`, and a `transferGroupId` that is a UUID string, which step 3's ledger read-back consumes.
+- Step 3 response envelope: the MCP `tools/call` HTTP response status is 200 and the result's `isError` is not true; `content` is an array whose single entry has `type` `"text"` and a `text` string that parses as JSON.
+- Step 3 body — top-level shape: the parsed payload has exactly one key, `accounts`, whose value is an array.
+- Step 3 body — per-account field accounting: every entry of `accounts` has exactly the fields `id`, `name`, `currency`, `balanceMinor` and no others; `id` is a UUID string, `name` is a non-empty string, `currency` is one of `"GBP"`, `"EUR"`, `"USD"`, and `balanceMinor` is an integer (`Number.isInteger`).
+- Step 3 body — ordering: the `accounts` entries are in ascending order of `name` (the handler orders by `accounts.name` ascending).
+- Step 3 body — THE OUTCOME, source: the entry whose `id` is `10000000-0000-4000-8000-000000000021` has `balanceMinor` exactly equal to the step‑1 operating-account `balanceMinor` minus the `amountMinor` sent — the money left the source account.
+- Step 3 body — THE OUTCOME, destination: the entry whose `id` is `10000000-0000-4000-8000-000000000022` has `balanceMinor` exactly equal to the step‑1 tax-reserve `balanceMinor` plus the `amountMinor` sent — the money arrived in the destination account.
+- Step 3 body — identity of the two accounts: the source entry's `currency` is `"GBP"` and the destination entry's `currency` is `"GBP"` (the transfer stayed inside one currency).
+- Step 3 body — nothing else moved: the entry ids returned in step 3 are the same set of ids returned in step 1, and every account other than the two in the transfer has the same `balanceMinor` in step 3 as it had in step 1.
+- Persisted ledger (direct Postgres read by `transferGroupId` returned in step 2): exactly two `transactions` rows exist for that `transfer_group_id`; one has `account_id` = `…021`, `kind` = `transfer_out`, `counterparty_account_id` = `…022`; the other has `account_id` = `…022`, `kind` = `transfer_in`, `counterparty_account_id` = `…021`; both have `amount_minor` equal to the amount sent, `currency` `GBP`, `organization_id` `10000000-0000-4000-8000-000000000001`, and `description` equal to the unique per-run description sent.
+- Persisted balances (direct Postgres read of `accounts`): the `balance_minor` of `…021` equals the step‑3 response value for that account, and the `balance_minor` of `…022` equals the step‑3 response value for that account — the response reflects committed state, not a computed view.
+- Response headers of the step‑3 `tools/call` response match the observed baseline: `Content-Type` as observed (the MCP Streamable HTTP transport's JSON or SSE content type), and `Cache-Control`, `Vary`, `Set-Cookie`, `Access-Control-Allow-Origin`, `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` pinned to the values observed on this run — each pinned as absent if the server does not send it. Do not assert `Date`, `Content-Length`, `ETag`, `Server`, or any request/trace id header.
+### Cleanup
+- Close the Postgres connection (`await db.end().catch(() => {})`); do not reverse the transfer — the ledger movement is real and every assertion is relative to the balances this run read in step 1.
+### Notes
+The response shape for both tools is derived from `src/db/store.ts` (`listAccounts`/`toAccount` → `{ id, name, currency, balanceMinor }`; `createTransfer` → `{ transferGroupId, currency, amountMinor, from, to }`) and `src/mcp/server.ts` (`perform` wraps the value as `content: [{ type: "text", text: JSON.stringify(value, null, 2) }]`). `balanceMinor` is a drizzle `bigint` in `mode: "number"`, so it serializes as a JSON number. The flow runs against shared seeded accounts, so all balance assertions are deltas against the step‑1 reading rather than absolute seeded values — that is what keeps it repeatable and parallel-safe.

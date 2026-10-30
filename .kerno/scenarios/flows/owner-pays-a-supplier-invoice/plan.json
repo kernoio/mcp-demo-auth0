@@ -1,0 +1,119 @@
+{
+    "scenarios": [
+        {
+            "id": "owner-pays-a-supplier-invoice",
+            "guidance": "This scenario is the flow itself — it walks the journey end-to-end and is what Kerno calibrates on. It must not be removed.\n\nAs the seeded owner Ada North, walk the full supplier-payment journey over the MCP server: list the organization's supplier invoices, find the unpaid Low Street Print invoice `10000000-0000-4000-8000-000000000061`, pay it from the Operating GBP account `10000000-0000-4000-8000-000000000021`, then read the same invoice back with `get_invoice` and prove it now reads as paid. Authenticate in arrange with `AuthClient.getTokenByPassword` from `@auth0/auth0-auth-js` (AUTH0_DOMAIN hostname only, plus AUTH0_CLIENT_ID / AUTH0_CLIENT_SECRET / AUTH0_AUDIENCE / AUTH0_TEST_USERNAME / AUTH0_TEST_PASSWORD), passing a `customFetch` that rewrites `https://<AUTH0_DOMAIN>` to `http://<AUTH0_DOMAIN>` — the local issuer is HTTP on port 3000, that rewrite is required and must never be reported as BLOCKED — then send `Authorization: Bearer <token>` on every `tools/call`. Because the seeded ledger persists between runs and this flow mutates the one named invoice, the scenario must reach Postgres DIRECTLY (`process.env.DATABASE_URL`) in arrange to put that invoice back into the `unpaid` state (clear `paid_from_account_id`, `paid_transaction_id`, `paid_at`, delete any ledger debit left by a previous run and credit its amount back to the Operating GBP account) and must restore the same baseline in cleanUp, so the flow is deterministic and repeatable. The hard outcome to prove is on the LAST step: `get_invoice` for that invoice id returns `status` `\"paid\"`, `paidFromAccountId` equal to the Operating GBP account id, a `paidTransactionId` equal to the transaction id `pay_invoice` reported, and a non-null ISO-8601 `paidAt` — with every other `InvoiceView` field accounted for. The earlier steps are fixtures: assert only that they succeeded and carried the values the next step consumes.",
+            "status": "keep",
+            "spec": {
+                "id": "owner-pays-a-supplier-invoice",
+                "title": "Owner Ada North pays the Low Street Print supplier invoice and reads it back as paid",
+                "kind": "happy_path",
+                "preconditions": [
+                    "The Northwharf MCP server is reachable and serving stateless `tools/call` requests at the SUT base URL.",
+                    "An owner access token for Ada North is minted via `AuthClient.getTokenByPassword` with the `customFetch` https→http rewrite for the local issuer; it carries `invoices:read` and `invoices:pay`.",
+                    "Postgres is reachable at `process.env.DATABASE_URL`, and the invoice `10000000-0000-4000-8000-000000000061` (Low Street Print, 240000 GBP) is reset directly in the database to `status = 'unpaid'` with `paid_from_account_id`, `paid_transaction_id` and `paid_at` all NULL; any ledger debit row left by a previous run of this flow is deleted and its amount credited back to the Operating GBP account.",
+                    "The Operating GBP account `10000000-0000-4000-8000-000000000021` exists in Northwharf Ltd, is in GBP, and its `balance_minor` is at least the invoice amount (240000) — top it up directly in the database if it is not."
+                ],
+                "trigger": "Three authenticated MCP `tools/call` requests, in order, each with `Authorization: Bearer <owner token>`: `list_invoices` (no arguments) → `pay_invoice` with `{ invoiceId: \"10000000-0000-4000-8000-000000000061\", accountId: \"10000000-0000-4000-8000-000000000021\" }` → `get_invoice` with `{ invoiceId: \"10000000-0000-4000-8000-000000000061\" }`.",
+                "mainSuccessScenario": [
+                    "`TOOL list_invoices` — Ada lists the organization's supplier invoices; the call succeeds (not an MCP tool error) and the returned `invoices` array contains an entry whose `id` is `10000000-0000-4000-8000-000000000061` with `status` `\"unpaid\"`; the flow carries that entry's `id`, `amountMinor` and `currency` forward.",
+                    "`TOOL pay_invoice` — Ada pays that invoice from the Operating GBP account `10000000-0000-4000-8000-000000000021`; the call succeeds, `alreadyPaid` is `false`, and the flow carries the returned `transactionId` forward as the expected `paidTransactionId`.",
+                    "`TOOL get_invoice` — Ada reads the same invoice back by id; this is the step the flow is about, and its full `InvoiceView` response is asserted field by field below."
+                ],
+                "postconditions": [
+                    "Step 1 `list_invoices` is not an MCP tool error (`isError` is not true) and its parsed payload contains an `invoices` array holding exactly one entry with `id` `\"10000000-0000-4000-8000-000000000061\"`, whose `status` is `\"unpaid\"` at that moment.",
+                    "Step 2 `pay_invoice` is not an MCP tool error, its parsed payload has `alreadyPaid` `false`, and `transactionId` is a UUID string — the value later steps consume.",
+                    "Step 3 response body `id` is `\"10000000-0000-4000-8000-000000000061\"` — the invoice the flow paid.",
+                    "Step 3 response body `status` is `\"paid\"` — the business outcome the user named.",
+                    "Step 3 response body `paidFromAccountId` is `\"10000000-0000-4000-8000-000000000021\"`, the Operating GBP account the payment was made from.",
+                    "Step 3 response body `paidTransactionId` equals the `transactionId` returned by `pay_invoice` in step 2.",
+                    "Step 3 response body `paidAt` is a non-null ISO-8601 timestamp string (anchored `^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}` pattern) and `Date.parse(paidAt)` is not NaN.",
+                    "Step 3 response body `counterparty` is `\"Low Street Print\"` and equals the `counterparty` seen for this invoice in step 1's list.",
+                    "Step 3 response body `amountMinor` is `240000` and equals the `amountMinor` seen for this invoice in step 1's list.",
+                    "Step 3 response body `currency` is `\"GBP\"`, a member of the allowed set `GBP | EUR | USD`.",
+                    "Step 3 response body `dueOn` is a `YYYY-MM-DD` date string (anchored `^\\d{4}-\\d{2}-\\d{2}$`) and equals the `dueOn` seen for this invoice in step 1's list.",
+                    "Step 3's parsed invoice object has exactly the `InvoiceView` keys `id`, `counterparty`, `amountMinor`, `currency`, `dueOn`, `status`, `paidFromAccountId`, `paidTransactionId`, `paidAt` and no others — asserted as one `toEqual` over the whole object with `paidAt` masked by `expect.stringMatching`.",
+                    "Step 3's MCP result is not an error result: `isError` is not true, and `content[0].type` is `\"text\"`.",
+                    "Persisted state, read back directly from Postgres after step 3: the `invoices` row with id `10000000-0000-4000-8000-000000000061` has `status = 'paid'`, `paid_from_account_id = '10000000-0000-4000-8000-000000000021'`, `paid_transaction_id` equal to step 2's `transactionId`, and a non-null `paid_at`.",
+                    "Persisted state: exactly one `transactions` row exists with `id` equal to step 2's `transactionId`, with `kind = 'debit'`, `amount_minor = 240000`, `currency = 'GBP'`, `account_id = '10000000-0000-4000-8000-000000000021'`, `description = 'Supplier payment — Low Street Print'` and `organization_id = '10000000-0000-4000-8000-000000000001'`.",
+                    "Persisted state: the Operating GBP account's `balance_minor` equals the balance recorded in arrange minus 240000.",
+                    "The HTTP response of the final `tools/call` carries the observed baseline headers — `content-type` as the MCP transport sends it — and the behavioural headers (`Cache-Control`, `Vary`, `Set-Cookie`, `Access-Control-*`, `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`) match the observed baseline, each one the server does not send pinned as absent. If the MCP client used for the call does not expose response headers, record that as a declared gap in the finding rather than inventing values.",
+                    "No response payload in the flow contains a stack frame, absolute filesystem path, SQL or ORM driver text, or exception class name."
+                ],
+                "primaryActor": "Ada North, the seeded owner of Northwharf Ltd (subject `auth0|6728f0a1b2c3d4e5f6789012`)",
+                "scope": "FLOW owner-pays-a-supplier-invoice (TOOL list_invoices → TOOL pay_invoice → TOOL get_invoice)",
+                "minimalGuarantees": [],
+                "cleanup": [
+                    "Restore the baseline directly in Postgres: set the `invoices` row `10000000-0000-4000-8000-000000000061` back to `status = 'unpaid'` with `paid_from_account_id`, `paid_transaction_id` and `paid_at` NULL; delete the `transactions` row created by step 2 (verify `rowCount` is 1); credit 240000 back to the Operating GBP account `10000000-0000-4000-8000-000000000021`.",
+                    "Close the Postgres connection (`await db.end().catch(() => {})` inside a `finally`) and close the MCP client."
+                ],
+                "notes": "The seeded ledger persists across runs and this flow mutates the one invoice the user named, so the scenario is NOT parallel-safe against another run of itself: the arrange reset plus the verified cleanUp restore are what make it deterministic and repeatable. Use the named seed ids rather than creating a fresh invoice — the request-specific context pins them. Response field names come from `InvoiceView` in `src/db/store.ts` (lines 54-64) and from the `payInvoice` return type (lines 313-317). Tool errors surface as an MCP result with `isError: true` and a JSON `{ error, message }` text block, not as an HTTP error status.",
+                "requiredDependencies": [
+                    "database"
+                ]
+            },
+            "kind": "happy_path"
+        }
+    ],
+    "precondition": {
+        "description": "The Northwharf MCP server is deployed and reachable at the SUT base URL (`process.env.SUT_BASE_URL`, the Streamable HTTP MCP endpoint), and answers `tools/call` requests.\n\nThe local Auth0 issuer is reachable and can mint an owner access token: `AUTH0_DOMAIN` (hostname only, `localhost:3000`), `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`, `AUTH0_TEST_USERNAME` and `AUTH0_TEST_PASSWORD` are present in the environment, and `AuthClient.getTokenByPassword` from `@auth0/auth0-auth-js` returns an access token for the seeded owner Ada North (`auth0|6728f0a1b2c3d4e5f6789012`). The issuer speaks HTTP on port 3000, so the client must be given a `customFetch` that rewrites `https://<AUTH0_DOMAIN>` to `http://<AUTH0_DOMAIN>` before calling fetch — this rewrite is required and is not a blocker. The resulting token carries the full owner permission set, which includes `invoices:read` and `invoices:pay`.\n\nPostgres is reachable directly at `process.env.DATABASE_URL` (the same database the running app uses), the migrations are applied, and the startup seed has loaded Northwharf Ltd (`10000000-0000-4000-8000-000000000001`) with the Low Street Print supplier invoice `10000000-0000-4000-8000-000000000061` and the Operating GBP account `10000000-0000-4000-8000-000000000021`.",
+        "state": "editing",
+        "spec": null
+    },
+    "testGenerationContext": "## The user flow under test\n\nAs the owner Ada North, pay a supplier invoice and read it back as paid.\n\n### The outcome that must hold at the end\n\nThe supplier invoice reads as paid.\n\nRead this back from the system in the flow's last step and assert it. A flow that only checks the status code of its last call has not tested the thing the user named.\n\n### The endpoints it crosses, in order\n\n1. `TOOL list_invoices`\n2. `TOOL pay_invoice`\n3. `TOOL get_invoice`\n\nImplement one `ctx.step(...)` per entry, in this order, carrying values between them in local variables. The final entry is the endpoint the flow is ABOUT; the ones before it are setup that must succeed for it to mean anything.\n\n### Additional guidance\n\nActor is the seeded owner Ada North. Mint her access token with AuthClient from @auth0/auth0-auth-js by calling getTokenByPassword. Do not POST /oauth/token by hand and do not use mintJwt. Read AUTH0_DOMAIN (localhost:3000, hostname only), AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE, AUTH0_TEST_USERNAME, and AUTH0_TEST_PASSWORD. Pass customFetch that rewrites a request URL from https://AUTH0_DOMAIN to http://AUTH0_DOMAIN before calling fetch. AuthClient always builds https URLs and this issuer is HTTP on port 3000. That rewrite is required. Do not report it as BLOCKED and do not fall back to MCP_AUTH_HEADERS. Authenticate in arrange, then send Authorization: Bearer on every MCP tools/call. Oak Lane Hosting invoice 10000000-0000-4000-8000-000000000062 is already paid. Pay Low Street Print invoice 10000000-0000-4000-8000-000000000061 from GBP operating account 10000000-0000-4000-8000-000000000021. get_invoice reads it back as paid.",
+    "coverage": {
+        "state": "declared",
+        "parameters": [
+            {
+                "parameter": "list_invoices (no arguments)",
+                "source": "body",
+                "scenarios": [
+                    "owner-pays-a-supplier-invoice"
+                ],
+                "gapReason": "the tool declares no inputSchema, so there is nothing to vary",
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "pay_invoice.invoiceId",
+                "source": "body",
+                "scenarios": [
+                    "owner-pays-a-supplier-invoice"
+                ],
+                "gapReason": "this is a user-flow plan limited to one scenario, so invalid and unknown invoice ids are not exercised here",
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "pay_invoice.accountId",
+                "source": "body",
+                "scenarios": [
+                    "owner-pays-a-supplier-invoice"
+                ],
+                "gapReason": "this is a user-flow plan limited to one scenario, so mismatched-currency, insufficient-funds and unknown account ids are not exercised here",
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "get_invoice.invoiceId",
+                "source": "body",
+                "scenarios": [
+                    "owner-pays-a-supplier-invoice"
+                ],
+                "gapReason": "this is a user-flow plan limited to one scenario, so the not_found branch is not exercised here",
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "Authorization",
+                "source": "header",
+                "scenarios": [
+                    "owner-pays-a-supplier-invoice"
+                ],
+                "gapReason": "only the valid owner bearer is sent; missing/invalid token and insufficient-permission variants belong to the per-tool endpoint plans, not to this flow",
+                "values": [],
+                "uncoveredValues": []
+            }
+        ]
+    }
+}

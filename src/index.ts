@@ -1,5 +1,4 @@
-import { ensureAuthDirectory } from "./auth/directory.js";
-import { createAccessVerifier } from "./auth/verify.js";
+import { createBearerAuthenticator } from "./auth/verify.js";
 import { readConfig } from "./config.js";
 import { openDatabase } from "./db/client.js";
 import { applyMigrations } from "./db/migrate.js";
@@ -10,10 +9,12 @@ const config = readConfig();
 const { db, close } = openDatabase(config.databaseUrl);
 
 await applyMigrations(db);
-await ensureAuthDirectory(config);
 await seedDatabase(db, config.ownerSubject);
 
-const app = createApp(db, createAccessVerifier(config));
+const app = createApp(db, createBearerAuthenticator(config), {
+  resource: config.authAudience,
+  authorizationServer: config.authIssuer,
+});
 const server = app.listen(config.port, "0.0.0.0");
 
 await new Promise<void>((resolve, reject) => {

@@ -1,57 +1,89 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { accessPermissions, ownerSubject } from "../src/auth/permissions.js";
+import { createAuth0Client } from "../src/auth/auth0.js";
+import { ownerSubject } from "../src/auth/permissions.js";
 
 const appUrl = process.env.NORTHWHARF_URL ?? "http://127.0.0.1:8080";
 const authUrl = process.env.AUTH0_PUBLIC_URL ?? "http://127.0.0.1:3000";
-const audience = process.env.AUTH0_AUDIENCE ?? "https://mcp.northwharf.local";
-const issuer = process.env.AUTH0_ISSUER ?? "https://auth.northwharf.local/";
-const clientId = process.env.AUTH0_CLIENT_ID ?? "client_id";
-const clientSecret = process.env.AUTH0_CLIENT_SECRET ?? "client_secret";
+const audience = process.env.AUTH0_AUDIENCE ?? "http://localhost:8080/mcp";
+const issuer = process.env.AUTH0_ISSUER ?? process.env.AUTH0_ISSUER_BASE_URL ?? "http://localhost:3000";
+const clientId = process.env.AUTH0_MGMT_CLIENT_ID ?? "northwharf-management";
+const clientSecret = process.env.AUTH0_MGMT_CLIENT_SECRET ?? "northwharf-management-secret";
+const ownerEmail = process.env.AUTH0_OWNER_EMAIL ?? "ada.north@northwharf.example";
+const ownerPassword = process.env.AUTH0_OWNER_PASSWORD ?? "ada-north-local";
+const auth0 = createAuth0Client({
+  issuer,
+  baseUrl: authUrl,
+  clientId,
+  clientSecret,
+  audience,
+});
 
 await main();
 
 async function main(): Promise<void> {
   await waitForHealth();
-  const token = await mintToken(audience);
-  const claims = decodePayload(token);
-  if (claims.iss !== issuer) {
-    throw new Error(`issuer claim is ${String(claims.iss)}, expected ${issuer}`);
-  }
-  if (claims.aud !== audience) {
-    throw new Error(`audience claim is ${String(claims.aud)}, expected ${audience}`);
-  }
-  if (claims.sub !== ownerSubject) {
-    throw new Error(`subject claim is ${String(claims.sub)}, expected ${ownerSubject}`);
-  }
-  console.log(`token ok iss=${String(claims.iss)} sub=${String(claims.sub)}`);
+  await auth0.rejectIncorrectManagementSecret();
+  const stamp = Date.now().toString(36);
 
-  const client = await connect(token);
+  const ownerToken = await auth0.passwordGrant(ownerEmail, ownerPassword);
+  const ownerClaims = decodePayload(ownerToken);
+  if (ownerClaims.iss !== issuer || ownerClaims.aud !== audience || ownerClaims.sub !== ownerSubject) {
+    throw new Error(`owner token claims ${JSON.stringify(ownerClaims)}`);
+  }
+  if (ownerClaims.gty !== "password") {
+    throw new Error(`owner grant is ${String(ownerClaims.gty)}`);
+  }
+  console.log(`owner token ok sub=${String(ownerClaims.sub)}`);
+
+  const ownerClient = await connect(ownerToken);
   try {
-    const who = await callJson(client, "whoami", {});
-    if (who.member === undefined || !JSON.stringify(who).includes("Ada North")) {
+    const who = await callJson(ownerClient, "whoami", {});
+    if (who.subject !== ownerSubject || !JSON.stringify(who).includes("Ada North")) {
       throw new Error(`whoami did not return Ada North: ${JSON.stringify(who)}`);
     }
-    const accounts = await callJson(client, "list_accounts", {});
+    const accounts = await callJson(ownerClient, "list_accounts", {});
     if (!JSON.stringify(accounts).includes("Operating GBP")) {
       throw new Error(`list_accounts missing Operating GBP: ${JSON.stringify(accounts)}`);
     }
-    const snapshot = await callJson(client, "cash_snapshot", {});
-    if (!JSON.stringify(snapshot).includes("runwayMonths")) {
-      throw new Error(`cash_snapshot missing runway: ${JSON.stringify(snapshot)}`);
-    }
-    console.log("whoami, list_accounts, cash_snapshot ok");
-    await callAccountsOverHttp(token);
-    console.log("HTTP tools/call list_accounts ok");
+    console.log("owner whoami and list_accounts ok");
   } finally {
-    await client.close();
+    await ownerClient.close();
   }
 
+  const createdEmail = `casey.${stamp}@northwharf.example`;
+  const created = await auth0.createUser({
+    email: createdEmail,
+    password: "shore-local-pass",
+    emailVerified: true,
+    name: "Casey Shore",
+  });
+  if (created.userId === ownerSubject || !created.userId.startsWith("auth0|")) {
+    throw new Error(`created user id ${created.userId}`);
+  }
+  const createdToken = await auth0.passwordGrant(createdEmail, "shore-local-pass");
+  if (decodePayload(createdToken).sub !== created.userId) {
+    throw new Error("created user token subject does not match user_id");
+  }
+  const createdClient = await connect(createdToken);
+  try {
+    const who = await callJson(createdClient, "whoami", {});
+    if (who.subject !== created.userId) {
+      throw new Error(`created whoami subject ${String(who.subject)}`);
+    }
+    const accounts = await callJson(createdClient, "list_accounts", {});
+    if (!JSON.stringify(accounts).includes("Operating GBP")) {
+      throw new Error(`created user list_accounts missing Operating GBP: ${JSON.stringify(accounts)}`);
+    }
+    console.log(`created user ok sub=${created.userId}`);
+  } finally {
+    await createdClient.close();
+  }
+  await callAccountsOverHttp(createdToken);
+
+  await expectMissingPermission(`limited.${stamp}@northwharf.example`);
   await expectMissingToken();
-  console.log("missing token rejected");
-  await expectMissingPermission();
-  console.log("missing permission rejected");
   console.log("smoke ok");
 }
 
@@ -73,24 +105,6 @@ async function waitForHealth(): Promise<void> {
   throw new Error(`Northwharf health check did not pass: ${last}`);
 }
 
-async function mintToken(tokenAudience: string): Promise<string> {
-  const response = await fetch(`${authUrl}/oauth/token`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      client_id: clientId,
-      client_secret: clientSecret,
-      audience: tokenAudience,
-      grant_type: "client_credentials",
-    }),
-  });
-  const body: unknown = await response.json();
-  if (!response.ok || !isRecord(body) || typeof body.access_token !== "string") {
-    throw new Error(`token request failed ${response.status}: ${JSON.stringify(body)}`);
-  }
-  return body.access_token;
-}
-
 async function connect(token: string): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(new URL(`${appUrl}/mcp`), {
     requestInit: { headers: { authorization: `Bearer ${token}` } },
@@ -106,11 +120,7 @@ async function callJson(client: Client, name: string, args: Record<string, unkno
   if (result.isError) {
     throw new Error(`${name} failed: ${text}`);
   }
-  const parsed: unknown = JSON.parse(text);
-  if (!isRecord(parsed)) {
-    throw new Error(`${name} did not return an object`);
-  }
-  return parsed;
+  return parseObject(text, name);
 }
 
 async function callAccountsOverHttp(token: string): Promise<void> {
@@ -153,33 +163,23 @@ async function expectMissingToken(): Promise<void> {
   }
 }
 
-async function expectMissingPermission(): Promise<void> {
+async function expectMissingPermission(email: string): Promise<void> {
+  await auth0.createUser({
+    email,
+    password: "shore-local-pass",
+    name: "Limited Shore",
+    permissions: ["cards:read"],
+  });
+  const token = await auth0.passwordGrant(email, "shore-local-pass");
+  const client = await connect(token);
   try {
-    await setPermissions(["cards:read"]);
-    const token = await mintToken(audience);
-    const client = await connect(token);
-    try {
-      const result = toolResult(await client.callTool({ name: "list_accounts", arguments: {} }));
-      const text = textContent(result);
-      if (!result.isError || !text.includes("accounts:read")) {
-        throw new Error(`expected a permission error, got ${text}`);
-      }
-    } finally {
-      await client.close();
+    const result = toolResult(await client.callTool({ name: "list_accounts", arguments: {} }));
+    const text = textContent(result);
+    if (!result.isError || !text.includes("accounts:read")) {
+      throw new Error(`expected a permission error, got ${text}`);
     }
   } finally {
-    await setPermissions([...accessPermissions]);
-  }
-}
-
-async function setPermissions(permissions: readonly string[]): Promise<void> {
-  const response = await fetch(`${authUrl}/permissions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ audience, permissions }),
-  });
-  if (!response.ok) {
-    throw new Error(`permission update failed ${response.status}: ${await response.text()}`);
+    await client.close();
   }
 }
 
@@ -198,6 +198,14 @@ function textContent(result: CallToolResult): string {
   return block.text;
 }
 
+function parseObject(text: string, name: string): Record<string, unknown> {
+  const parsed: unknown = JSON.parse(text);
+  if (!isRecord(parsed)) {
+    throw new Error(`${name} did not return an object`);
+  }
+  return parsed;
+}
+
 function decodePayload(token: string): Record<string, unknown> {
   const part = token.split(".")[1];
   if (!part) {
@@ -211,7 +219,7 @@ function decodePayload(token: string): Record<string, unknown> {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function delay(ms: number): Promise<void> {

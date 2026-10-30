@@ -1,0 +1,98 @@
+{
+    "scenarios": [
+        {
+            "id": "owner-freezes-a-debit-card",
+            "guidance": "This scenario is the flow itself — it walks the journey end-to-end and is what Kerno calibrates on. It must not be removed.\n\nThe seeded owner Ada North lists the organization's cards, freezes her own debit card `10000000-0000-4000-8000-000000000041` (last four 4412, GBP, limit 500000) with `set_card_status`, then lists the cards again and reads that card back as `frozen`. Arrange mints an owner access token with `AuthClient.getTokenByPassword` (customFetch rewrites only the request URL `https://<AUTH0_DOMAIN>` → `http://<AUTH0_DOMAIN>`; never the discovery/response body) and, directly in Postgres via `DATABASE_URL`, sets that card's `status` to `active` so the flow starts from a known state. Every `tools/call` sends `Authorization: Bearer <accessToken>`. The outcome that must hold is the business one: the final `list_cards` entry for card `…0041` reads `status: \"frozen\"`, cross-checked against the `cards` row in Postgres. Cleanup restores that card to `active` so the flow is re-runnable. Ben's card `…0042` must not be touched, and no card may be cancelled.",
+            "status": "keep",
+            "spec": {
+                "id": "owner-freezes-a-debit-card",
+                "title": "The owner freezes her own debit card and reads it back as frozen",
+                "kind": "happy_path",
+                "preconditions": [
+                    "The MCP server is reachable: the base URL with the trailing `/mcp` removed plus `/health` answers 200.",
+                    "An owner access token is minted with `AuthClient.getTokenByPassword({ username: AUTH0_TEST_USERNAME, password: AUTH0_TEST_PASSWORD, audience: AUTH0_AUDIENCE })` using `AUTH0_DOMAIN`/`AUTH0_CLIENT_ID`/`AUTH0_CLIENT_SECRET` and a `customFetch` that rewrites only the request URL scheme/host; the token is read as `result.accessToken` and sent as `Authorization: Bearer` on every `tools/call`.",
+                    "Card `10000000-0000-4000-8000-000000000041` (Ada's card, last four 4412, GBP) is set to `status = 'active'` directly in Postgres via `DATABASE_URL`, so the freeze is an observable transition rather than a no-op."
+                ],
+                "trigger": "The ordered walk: `tools/call list_cards` (no arguments) → `tools/call set_card_status` with `{ cardId: \"10000000-0000-4000-8000-000000000041\", status: \"frozen\" }` → `tools/call list_cards` (no arguments), all as Ada over Streamable HTTP MCP at `SUT_BASE_URL`.",
+                "mainSuccessScenario": [
+                    "`TOOL list_cards` — Ada lists the organization's cards; the call succeeds (HTTP 200, `isError` not true) and the parsed `cards` array contains an entry whose `id` is `10000000-0000-4000-8000-000000000041` with `status: \"active\"`. Carry that card's `id` into the next step.",
+                    "`TOOL set_card_status` — Ada calls `set_card_status` with the carried `cardId` and `status: \"frozen\"`; the call succeeds (HTTP 200, `isError` not true) and the returned card's `id` equals the carried id and its `status` is `\"frozen\"`.",
+                    "`TOOL list_cards` — Ada lists the cards again; this is the step the flow is about. Its response is asserted in full for the card under test, and the `cards` row is read back from Postgres to prove the freeze persisted."
+                ],
+                "postconditions": [
+                    "Step 1 (fixture): the `list_cards` call returns HTTP 200 with `isError` not true, and the `cards` array contains an entry with `id` `10000000-0000-4000-8000-000000000041` whose `status` is `\"active\"` — the id this flow carries forward.",
+                    "Step 2 (fixture): the `set_card_status` call returns HTTP 200 with `isError` not true, and the returned card's `id` is `10000000-0000-4000-8000-000000000041` and its `status` is `\"frozen\"`.",
+                    "Final step — transport: the second `list_cards` call returns HTTP 200.",
+                    "Final step — envelope: the tool result's `isError` is not true, and `content[0].type` is `\"text\"` whose text parses as JSON with exactly one top-level key, `cards`, holding an array.",
+                    "Final step — `cards` is an array containing exactly one entry whose `id` is `10000000-0000-4000-8000-000000000041`.",
+                    "Final step — that entry equals, field for field: `id` is `\"10000000-0000-4000-8000-000000000041\"`; `memberId` is Ada's member id as returned by step 1 for the same card (the value is stable across the flow, so pin it to step 1's observed value); `accountId` equals the `accountId` step 1 returned for this card; `lastFour` is `\"4412\"`; `status` is `\"frozen\"` — the business outcome the flow is about; `spendingLimitMinor` equals the value step 1 returned for this card (the flow never changes the limit); `currency` is `\"GBP\"`. No other properties are present on the entry.",
+                    "Final step — the card entry does not expose a full card number or any PAN-like field: it has no `number`, `pan`, `cvv` or `expiry` property.",
+                    "Final step — isolation of the sibling card: the `cards` array still contains the entry for `10000000-0000-4000-8000-000000000042` (Ben's card) and its `status` is `\"frozen\"` as the seed left it; no card in the array has `status` `\"cancelled\"`.",
+                    "Persisted state: `SELECT status, spending_limit_minor, last_four, currency FROM cards WHERE id = '10000000-0000-4000-8000-000000000041'` returns exactly one row whose `status` is `'frozen'`, whose `spending_limit_minor` is unchanged from the value observed in step 1, whose `last_four` is `'4412'` and whose `currency` is `'GBP'`.",
+                    "Response headers: the final `list_cards` HTTP response headers match the observed baseline for this MCP endpoint — pin `Content-Type` as observed (the Streamable HTTP transport answers `application/json` or `text/event-stream`; pin the one this run returns), pin `Cache-Control` and `Vary` as observed, and pin as ABSENT any of `Set-Cookie`, `Access-Control-Allow-Origin`, `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` that the endpoint does not send. Do not assert `Date`, `Content-Length`, `ETag`, `Server` or any request/trace id.",
+                    "Negative: no response body in the flow contains a stack frame, absolute filesystem path, SQL or ORM driver text, or an exception class name."
+                ],
+                "primaryActor": "Ada North, seeded owner of Northwharf Ltd (subject `auth0|6728f0a1b2c3d4e5f6789012`, organization `10000000-0000-4000-8000-000000000001`)",
+                "scope": "FLOW owner-freezes-a-debit-card (TOOL list_cards → TOOL set_card_status → TOOL list_cards)",
+                "minimalGuarantees": [],
+                "cleanup": [
+                    "Restore card `10000000-0000-4000-8000-000000000041` to `status = 'active'` with a direct `UPDATE … WHERE id = …` on Postgres and verify the update affected exactly one row, so the flow can run again from the same starting state.",
+                    "Close the Postgres connection(s) opened by the scenario."
+                ],
+                "notes": "Ben's card `10000000-0000-4000-8000-000000000042` is already frozen by the seed and must not be used as the card this flow freezes; no card may be set to `cancelled`. The card entry's field list is derived from `toCard` in `src/db/store.ts` (`id`, `memberId`, `accountId`, `lastFour`, `status`, `spendingLimitMinor`, `currency`). `memberId`, `accountId` and `spendingLimitMinor` are pinned to the values step 1 observed rather than to hardcoded literals, because only the card id, last four, currency and status are stated by the flow context.",
+                "requiredDependencies": [
+                    "database"
+                ]
+            },
+            "kind": "happy_path"
+        }
+    ],
+    "precondition": {
+        "description": "Readiness for the `owner-freezes-a-debit-card` flow — all of it establishable by the test client itself:\n\n1. The Northwharf MCP server is deployed and reachable: the health endpoint derived from `SUT_BASE_URL` with the trailing `/mcp` removed, plus `/health`, answers 200 (never request `SUT_BASE_URL + /health`).\n2. The local Auth0 issuer can mint an owner access token with the password grant: `AUTH0_DOMAIN` (hostname only, e.g. `localhost:3000`), `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`, `AUTH0_TEST_USERNAME` and `AUTH0_TEST_PASSWORD` are present, and `AuthClient.getTokenByPassword({ username, password, audience })` from `@auth0/auth0-auth-js` returns an `accessToken`. The client passes a `customFetch` that rewrites ONLY the request URL `https://<AUTH0_DOMAIN>` → `http://<AUTH0_DOMAIN>` and then calls `fetch`; it must NOT rewrite the OIDC discovery JSON or any issuer string in a response body (doing so is what broke a previous run with \"There was an error while trying to request a token\").\n3. `DATABASE_URL` is present and the Postgres database the app uses is reachable, so the flow can put Ada's card into its `active` starting state and restore it afterwards.\n\nReadiness only: the owner's `cards:read` / `cards:manage` permissions and the card's own state are exercised by the flow's steps, not asserted here.",
+        "state": "editing",
+        "spec": null
+    },
+    "testGenerationContext": "## The user flow under test\n\nFreeze a debit card, then read it back as frozen.\n\n### The outcome that must hold at the end\n\nThe debit card reads as frozen.\n\nRead this back from the system in the flow's last step and assert it. A flow that only checks the status code of its last call has not tested the thing the user named.\n\n### The endpoints it crosses, in order\n\n1. `TOOL list_cards`\n2. `TOOL set_card_status`\n3. `TOOL list_cards`\n\nImplement one `ctx.step(...)` per entry, in this order, carrying values between them in local variables. The final entry is the endpoint the flow is ABOUT; the ones before it are setup that must succeed for it to mean anything.\n\n### Additional guidance\n\nActor is the seeded owner Ada North (email ada.north@northwharf.example, subject auth0|6728f0a1b2c3d4e5f6789012, organization Northwharf Ltd 10000000-0000-4000-8000-000000000001). She can list cards and freeze them.\n\nSign-in must copy the working pattern in .kerno/scenarios/flows/owner-pays-a-supplier-invoice/owner-pays-a-supplier-invoice.scenario.ts. Mint with AuthClient from @auth0/auth0-auth-js and getTokenByPassword. Read AUTH0_DOMAIN (hostname only: localhost:3000), AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_TEST_USERNAME, AUTH0_TEST_PASSWORD, and AUTH0_AUDIENCE. customFetch rewrites only the request URL, replacing https://AUTH0_DOMAIN with http://AUTH0_DOMAIN, then calls fetch. Do not rewrite the OIDC discovery JSON and do not change issuer strings in the response body. That body rewrite made the previous precondition fail with \"There was an error while trying to request a token\" even though a direct password grant succeeds. Read the token as result.accessToken. Pass audience on getTokenByPassword. Send Authorization: Bearer on every tools/call.\n\nProbe health at SUT_BASE_URL with the /mcp suffix removed, then /health. Do not request SUT_BASE_URL + /health.\n\nFreeze Ada's own debit card 10000000-0000-4000-8000-000000000041 (last four 4412, GBP, spending limit 500000). The seed leaves it active. Ben's card 10000000-0000-4000-8000-000000000042 is already frozen; do not use it as the card this flow freezes. Do not cancel any card.\n\nA direct probe of set_card_status on Ada's card with status frozen returned HTTP 200 and a card whose status is frozen. The probe then set that card back to active.\n\nThe last step must call list_cards and assert that Ada's card reads status frozen. Arrange sets that card to active in Postgres. Cleanup restores it to active so the flow can run again.",
+    "coverage": {
+        "state": "declared",
+        "parameters": [
+            {
+                "parameter": "cardId",
+                "source": "body",
+                "scenarios": [
+                    "owner-freezes-a-debit-card"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "status",
+                "source": "body",
+                "scenarios": [
+                    "owner-freezes-a-debit-card"
+                ],
+                "gapReason": "this subject is a user flow and emits exactly one scenario, which sends the flow's own value frozen; cancelled is explicitly forbidden by the flow context and active is only used by the direct Postgres arrange/cleanup, not by a tool call",
+                "values": [
+                    "active",
+                    "frozen",
+                    "cancelled"
+                ],
+                "uncoveredValues": [
+                    "active",
+                    "cancelled"
+                ]
+            },
+            {
+                "parameter": "Authorization",
+                "source": "header",
+                "scenarios": [
+                    "owner-freezes-a-debit-card"
+                ],
+                "gapReason": "the flow sends the owner bearer token on every tools/call; missing and invalid bearers are endpoint-level auth cases, out of scope for a single-scenario flow plan",
+                "values": [],
+                "uncoveredValues": []
+            }
+        ]
+    }
+}

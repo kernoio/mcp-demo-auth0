@@ -1,0 +1,15 @@
+{
+    "authRequired": true,
+    "authChannel": "",
+    "mechanism": "unknown",
+    "establishedVia": "http",
+    "dependencyKind": null,
+    "howToObtainCredential": "",
+    "credentialPresentation": "",
+    "requiredRolesOrScopes": "",
+    "envVars": [],
+    "tokenClaims": [],
+    "resolvedPath": "",
+    "resolvedHandler": "",
+    "notes": "UNRESOLVED_ENDPOINT: the security analysis for TOOL pay_invoice reported path `POST /mcp`, which is not the endpoint it was asked about; the result is rejected and nothing is declared for this endpoint."
+}

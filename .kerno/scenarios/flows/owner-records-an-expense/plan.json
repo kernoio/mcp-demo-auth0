@@ -1,0 +1,128 @@
+{
+    "scenarios": [
+        {
+            "id": "owner-records-an-expense",
+            "guidance": "This scenario is the flow itself — it walks the journey end-to-end and is what Kerno calibrates on. It must not be removed.\n\nThe user flow `owner-records-an-expense`: as the seeded owner Ada North, record an expense with `create_expense` and then see that exact expense in Northwharf Ltd's expense list returned by `list_expenses`. Authenticate in arrange by minting Ada's access token with `AuthClient.getTokenByPassword` from `@auth0/auth0-auth-js` (domain = `AUTH0_DOMAIN`, hostname only; client id/secret/audience and `AUTH0_TEST_USERNAME`/`AUTH0_TEST_PASSWORD` from env), passing a `customFetch` that rewrites `https://<AUTH0_DOMAIN>` to `http://<AUTH0_DOMAIN>` because the local issuer is HTTP-only on port 3000 — that rewrite is required and is not a BLOCKED condition; do not use `mintJwt` and do not hand-roll `POST /oauth/token`. Send `Authorization: Bearer <token>` on both MCP `tools/call` requests. Use a unique per-run merchant string (e.g. `faker.company.name()` plus a UUID fragment) and a unique amount so the created expense is identifiable among the organization's other expenses. Step 1 (`create_expense`) is setup: it must succeed and yield the new expense's `id`, and the values the read-back compares against. Step 2 (`list_expenses`) is what the flow is about: the returned `expenses` array must contain exactly one entry whose `id` is the id created in step 1, and that entry's every field is asserted in full. Clean up by deleting the created `expenses` row directly in Postgres (`DATABASE_URL`) and verifying the delete affected exactly one row.",
+            "status": "keep",
+            "spec": {
+                "id": "owner-records-an-expense",
+                "title": "Owner Ada North records an expense and sees it in the organization's expense list",
+                "kind": "happy_path",
+                "preconditions": [
+                    "The Northwharf MCP server is reachable and serves `tools/call` at the SUT MCP endpoint.",
+                    "The seeded member Ada North exists in organization Northwharf Ltd (`10000000-0000-4000-8000-000000000001`) with role `owner`.",
+                    "An access token for Ada is minted in arrange via `AuthClient.getTokenByPassword` (with the HTTP URL-rewriting `customFetch`) and carries `expenses:write` and `expenses:read`.",
+                    "Postgres is reachable at `process.env.DATABASE_URL` for the cleanup delete."
+                ],
+                "trigger": "Two authenticated MCP `tools/call` requests, in order: `create_expense` with `{ merchant: <unique per-run>, amountMinor: <unique positive integer>, currency: \"GBP\", category: \"travel\", status: \"submitted\" }`, then `list_expenses` with no arguments.",
+                "mainSuccessScenario": [
+                    "`tools/call create_expense` with the unique merchant, amount, `currency: \"GBP\"`, `category: \"travel\"`, `status: \"submitted\"` — HTTP 200, the tool result is not an error, and its JSON payload carries the new expense's `id`; capture that `id` for the read-back.",
+                    "`tools/call list_expenses` with no arguments — HTTP 200, the tool result is not an error, and its JSON payload's `expenses` array is read back to locate the expense recorded in step 1 by that `id`."
+                ],
+                "postconditions": [
+                    "Step 1 (`create_expense`, setup) responded HTTP 200 with a tool result whose `isError` is not true, and whose parsed JSON `id` is a UUID string — this is the id the final step is checked against.",
+                    "Final step (`list_expenses`) responded HTTP 200.",
+                    "The `list_expenses` tool result's `isError` is not true and `content[0].type` is `\"text\"` whose text parses as JSON with an `expenses` array.",
+                    "Exactly one entry in `expenses` has `id` equal to the id returned by step 1 — the expense Ada just recorded appears in the organization's expense list.",
+                    "That entry's `id` equals the `id` returned by `create_expense` in step 1.",
+                    "That entry's `memberId` is a UUID string equal to the `members.id` of the seeded owner subject `auth0|6728f0a1b2c3d4e5f6789012` (resolved from the created expense's own `memberId` returned in step 1).",
+                    "That entry's `merchant` equals the unique merchant string sent in step 1 (trimmed).",
+                    "That entry's `amountMinor` equals the amount sent in step 1 (a positive integer).",
+                    "That entry's `currency` is `\"GBP\"` — the currency sent in step 1, and a member of the allowed set `GBP`, `EUR`, `USD`.",
+                    "That entry's `category` equals `\"travel\"` — the category sent in step 1 (trimmed).",
+                    "That entry's `status` is `\"submitted\"` — the status sent in step 1, and a member of the allowed set `draft`, `submitted`, `approved`.",
+                    "That entry's `occurredAt` is an ISO-8601 timestamp string (anchored `^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}`) that parses as a real date.",
+                    "The entry has no fields beyond `id`, `memberId`, `merchant`, `amountMinor`, `currency`, `category`, `status`, `occurredAt` (assert the whole object in one deep-equality template).",
+                    "The `list_expenses` response headers match the observed baseline — `Content-Type` as observed for this MCP transport, and `Cache-Control`, `Vary`, `Set-Cookie`, `Access-Control-*`, `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` pinned to the observed value or pinned as absent. Do not assert `Date`, `Content-Length`, `ETag`, `Server` or any trace/request id header."
+                ],
+                "primaryActor": "Ada North, the seeded owner of Northwharf Ltd (subject `auth0|6728f0a1b2c3d4e5f6789012`)",
+                "scope": "FLOW owner-records-an-expense (TOOL create_expense → TOOL list_expenses)",
+                "minimalGuarantees": [],
+                "cleanup": [
+                    "Delete the `expenses` row created by this flow directly via `DATABASE_URL` (`DELETE FROM expenses WHERE id = $1`) and verify `rowCount` is 1.",
+                    "Close the Postgres connection (`await db.end().catch(() => {})` in a `finally`)."
+                ],
+                "notes": "The MCP tool payload is the JSON text inside `content[0].text`; parse it before asserting fields. `ExpenseView` (src/db/store.ts `toExpense`) is the response contract used for the field accounting above. `list_expenses` is organization-scoped and unfiltered, so isolation comes from the unique per-run merchant/amount and from matching the entry by the id created in step 1 — never by array index.",
+                "requiredDependencies": [
+                    "database"
+                ]
+            },
+            "kind": "happy_path"
+        }
+    ],
+    "precondition": {
+        "description": "The Northwharf MCP server is deployed and reachable at the SUT base URL (the Streamable HTTP MCP endpoint, `http://localhost:8080/mcp`), and answers `tools/call` requests with `content-type: application/json` and `accept: application/json, text/event-stream`.\n\nCredentials can be minted: the local Auth0 issuer (`AUTH0_DOMAIN`, hostname only, HTTP on port 3000) issues an access token for the seeded owner Ada North via `AuthClient.getTokenByPassword` from `@auth0/auth0-auth-js`, using `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`, `AUTH0_TEST_USERNAME` and `AUTH0_TEST_PASSWORD`. A `customFetch` that rewrites `https://<AUTH0_DOMAIN>` to `http://<AUTH0_DOMAIN>` is required because the issuer is HTTP-only; that rewrite is expected, not a blocker. Tokens last 3600 seconds and are sent as `Authorization: Bearer` on every `tools/call`.\n\nThe seeded owner exists as a member: subject `auth0|6728f0a1b2c3d4e5f6789012`, email `ada.north@northwharf.example`, role `owner`, in organization Northwharf Ltd (`10000000-0000-4000-8000-000000000001`), and her token carries the full owner permission set (including `expenses:write` and `expenses:read`).\n\nThe Postgres database used by the app is reachable directly via `process.env.DATABASE_URL` (host 127.0.0.1, port 5433, database `northwharf`) for read-back and cleanup, with migrations applied and the seed loaded.",
+        "state": "editing",
+        "spec": null
+    },
+    "testGenerationContext": "## The user flow under test\n\nAs the owner Ada North, record an expense and see it in the expense list.\n\n### The outcome that must hold at the end\n\nThe expense Ada just recorded appears in Northwharf Ltd's expense list.\n\nRead this back from the system in the flow's last step and assert it. A flow that only checks the status code of its last call has not tested the thing the user named.\n\n### The endpoints it crosses, in order\n\n1. `TOOL create_expense`\n2. `TOOL list_expenses`\n\nImplement one `ctx.step(...)` per entry, in this order, carrying values between them in local variables. The final entry is the endpoint the flow is ABOUT; the ones before it are setup that must succeed for it to mean anything.\n\n### Additional guidance\n\nActor is the seeded owner Ada North. Mint her access token with AuthClient from @auth0/auth0-auth-js by calling getTokenByPassword. Do not POST /oauth/token by hand and do not use mintJwt. Read AUTH0_DOMAIN (localhost:3000, hostname only), AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE, AUTH0_TEST_USERNAME, and AUTH0_TEST_PASSWORD. Pass customFetch that rewrites a request URL from https://AUTH0_DOMAIN to http://AUTH0_DOMAIN before calling fetch. AuthClient always builds https URLs and this issuer is HTTP on port 3000. That rewrite is required. Do not report it as BLOCKED and do not fall back to MCP_AUTH_HEADERS. Authenticate in arrange, then send Authorization: Bearer on every MCP tools/call. create_expense is setup. list_expenses is the read-back of that expense.",
+    "coverage": {
+        "state": "declared",
+        "parameters": [
+            {
+                "parameter": "merchant",
+                "source": "body",
+                "scenarios": [
+                    "owner_records_an_expense"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "amountMinor",
+                "source": "body",
+                "scenarios": [
+                    "owner_records_an_expense"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "currency",
+                "source": "body",
+                "scenarios": [
+                    "owner_records_an_expense"
+                ],
+                "gapReason": "this subject is a user flow and emits exactly one scenario, so only the GBP path the flow walks is sent; the other members belong to a create_expense endpoint plan",
+                "values": [
+                    "GBP",
+                    "EUR",
+                    "USD"
+                ],
+                "uncoveredValues": [
+                    "EUR",
+                    "USD"
+                ]
+            },
+            {
+                "parameter": "category",
+                "source": "body",
+                "scenarios": [
+                    "owner_records_an_expense"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "status",
+                "source": "body",
+                "scenarios": [
+                    "owner_records_an_expense"
+                ],
+                "gapReason": "the flow records a single expense with the default status submitted; the other members belong to a create_expense endpoint plan",
+                "values": [
+                    "draft",
+                    "submitted",
+                    "approved"
+                ],
+                "uncoveredValues": [
+                    "draft",
+                    "approved"
+                ]
+            }
+        ]
+    }
+}

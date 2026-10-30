@@ -1,0 +1,22 @@
+{
+    "id": "owner-changes-a-card-limit",
+    "description": "As the owner Ada North, change a debit card limit and read the card back.",
+    "steps": [
+        {
+            "method": "TOOL",
+            "path": "list_cards",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "set_card_limit",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "list_cards",
+            "role": "subject"
+        }
+    ],
+    "outcome": "The card's limit is the amount Ada set."
+}

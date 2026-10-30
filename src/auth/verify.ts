@@ -1,46 +1,65 @@
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
-import { DomainError } from "../domain/errors.js";
+import {
+  auth,
+  UnauthorizedError,
+  type JWTPayload,
+} from "express-oauth2-jwt-bearer";
+import type { NextFunction, Request, RequestHandler, Response } from "express";
 import type { AppConfig } from "../config.js";
+import { DomainError } from "../domain/errors.js";
 
 export type VerifiedAccess = {
   subject: string;
   permissions: readonly string[];
 };
 
-export type AccessVerifier = (authorizationHeader: string | undefined) => Promise<VerifiedAccess>;
+export type MemberLookup = (subject: string) => Promise<boolean>;
 
-export function createAccessVerifier(config: Pick<AppConfig, "authJwksUrl" | "authIssuer" | "authAudience">): AccessVerifier {
-  const keys = createRemoteJWKSet(new URL(config.authJwksUrl));
-  return async (authorizationHeader) => {
-    const token = bearerToken(authorizationHeader);
-    try {
-      const { payload } = await jwtVerify(token, keys, {
-        issuer: config.authIssuer,
-        audience: config.authAudience,
-      });
-      const subject = payload.sub;
-      if (typeof subject !== "string" || subject.length === 0) {
-        throw new DomainError("unauthenticated", "Token has no subject");
-      }
-      return { subject, permissions: readPermissions(payload) };
-    } catch (error) {
-      if (error instanceof DomainError) {
-        throw error;
-      }
-      throw new DomainError("unauthenticated", "Bearer token was rejected");
-    }
-  };
+export function createBearerAuthenticator(
+  config: Pick<AppConfig, "authIssuer" | "authAudience" | "authJwksUrl">,
+): RequestHandler {
+  return auth({
+    issuer: config.authIssuer,
+    audience: config.authAudience,
+    jwksUri: config.authJwksUrl,
+  });
 }
 
-function bearerToken(authorizationHeader: string | undefined): string {
-  if (!authorizationHeader) {
+export async function resolveAccess(req: Request, memberExists: MemberLookup): Promise<VerifiedAccess> {
+  const payload = req.auth?.payload;
+  if (!payload) {
     throw new DomainError("unauthenticated", "Authorization bearer token is required");
   }
-  const [scheme, token, extra] = authorizationHeader.split(" ");
-  if (scheme !== "Bearer" || !token || extra !== undefined) {
-    throw new DomainError("unauthenticated", "Authorization bearer token is required");
+  const subject = payload.sub;
+  if (typeof subject !== "string" || subject.length === 0) {
+    throw new DomainError("unauthenticated", "Token has no subject");
   }
-  return token;
+  if (!(await memberExists(subject))) {
+    throw new DomainError("forbidden", "No Northwharf member matches this token subject");
+  }
+  return { subject, permissions: readPermissions(payload) };
+}
+
+export function authErrorHandler(error: unknown, _req: Request, res: Response, next: NextFunction): void {
+  if (res.headersSent) {
+    next(error);
+    return;
+  }
+  if (error instanceof DomainError && error.code === "forbidden") {
+    res.status(403).json({ error: "forbidden", message: error.message });
+    return;
+  }
+  if (error instanceof DomainError && error.code === "unauthenticated") {
+    res.status(401).json({ error: "unauthenticated", message: error.message });
+    return;
+  }
+  if (error instanceof UnauthorizedError) {
+    res.status(401).json({
+      error: "unauthenticated",
+      message: error.message || "Bearer token was rejected",
+    });
+    return;
+  }
+  next(error);
 }
 
 function readPermissions(payload: JWTPayload): readonly string[] {

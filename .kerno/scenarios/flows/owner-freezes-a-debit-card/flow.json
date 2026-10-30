@@ -1,0 +1,22 @@
+{
+    "id": "owner-freezes-a-debit-card",
+    "description": "Freeze a debit card, then read it back as frozen.",
+    "steps": [
+        {
+            "method": "TOOL",
+            "path": "list_cards",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "set_card_status",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "list_cards",
+            "role": "subject"
+        }
+    ],
+    "outcome": "The debit card reads as frozen."
+}

@@ -1,0 +1,12 @@
+{
+    "id": "owner-reads-cash-position",
+    "description": "As the owner Ada North, read the cash position: balances, recent outflows, and runway.",
+    "steps": [
+        {
+            "method": "TOOL",
+            "path": "cash_snapshot",
+            "role": "subject"
+        }
+    ],
+    "outcome": "Ada sees Northwharf Ltd balances by currency, recent outflows, and runway."
+}

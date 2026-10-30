@@ -10,20 +10,23 @@
   "packageManager": "pnpm@11.25.0",
   "scripts": {
     "dev": "node --env-file-if-exists=.env --import tsx src/index.ts",
+    "identity": "node --env-file-if-exists=.env --import tsx src/identity/main.ts",
     "start": "node dist/index.js",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test src/domain/*.test.ts",
+    "test": "node --import tsx --test src/domain/*.test.ts src/auth/*.test.ts src/identity/*.test.ts src/http/*.test.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "node --env-file-if-exists=.env --import tsx src/cli/migrate.ts",
     "db:seed": "node --env-file-if-exists=.env --import tsx src/cli/seed.ts",
     "smoke": "node --import tsx scripts/smoke.ts"
   },
   "dependencies": {
+    "@auth0/auth0-auth-js": "1.18.0",
     "@modelcontextprotocol/sdk": "1.32.2",
+    "auth0": "7.6.0",
     "drizzle-orm": "0.45.4",
     "express": "5.3.0",
-    "jose": "6.2.13",
+    "express-oauth2-jwt-bearer": "1.11.0",
     "postgres": "3.4.9",
     "zod": "4.6.7"
   },

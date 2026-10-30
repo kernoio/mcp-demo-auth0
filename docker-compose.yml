@@ -16,45 +16,26 @@ services:
       retries: 30
 
   auth0:
-    image: public.ecr.aws/primaassicurazioni/localauth0:0.9.1
+    build: .
+    image: northwharf-demo:local
+    command: ["node", "dist/identity/main.js"]
     ports:
       - "${AUTH0_HOST_PORT:-3000}:3000"
     environment:
-      LOCALAUTH0_CONFIG: |
-        issuer = "https://auth.northwharf.local/"
-        subject = "auth0|ada.north"
-
-        [user_info]
-        subject = "auth0|ada.north"
-        name = "Ada North"
-        given_name = "Ada"
-        family_name = "North"
-        nickname = "ada"
-        locale = "en-GB"
-        email = "ada.north@northwharf.example"
-        email_verified = true
-
-        [[audience]]
-        name = "https://mcp.northwharf.local"
-        permissions = [
-          "accounts:read",
-          "transfers:write",
-          "expenses:read",
-          "expenses:write",
-          "invoices:read",
-          "invoices:pay",
-          "cards:read",
-          "cards:manage",
-          "treasury:read"
-        ]
-
-        [http]
-        port = 3000
-
-        [https]
-        port = 3001
+      AUTH0_PORT: "3000"
+      DATABASE_URL: postgres://northwharf:northwharf@postgres:5432/northwharf
+      AUTH0_ISSUER: http://localhost:3000
+      AUTH0_AUDIENCE: http://localhost:8080/mcp
+      AUTH0_MGMT_CLIENT_ID: ${AUTH0_MGMT_CLIENT_ID:-northwharf-management}
+      AUTH0_MGMT_CLIENT_SECRET: ${AUTH0_MGMT_CLIENT_SECRET:-northwharf-management-secret}
+      AUTH0_OWNER_SUBJECT: auth0|6728f0a1b2c3d4e5f6789012
+      AUTH0_OWNER_EMAIL: ada.north@northwharf.example
+      AUTH0_OWNER_PASSWORD: ${AUTH0_OWNER_PASSWORD:-ada-north-local}
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD", "/localauth0", "healthcheck"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
       interval: 3s
       timeout: 5s
       retries: 30
@@ -62,16 +43,16 @@ services:
 
   app:
     build: .
+    image: northwharf-demo:local
     ports:
       - "8080:8080"
     environment:
       PORT: "8080"
       DATABASE_URL: postgres://northwharf:northwharf@postgres:5432/northwharf
-      AUTH0_ISSUER: https://auth.northwharf.local/
-      AUTH0_AUDIENCE: https://mcp.northwharf.local
+      AUTH0_ISSUER: http://localhost:3000
+      AUTH0_AUDIENCE: http://localhost:8080/mcp
       AUTH0_JWKS_URL: http://auth0:3000/.well-known/jwks.json
-      AUTH0_BASE_URL: http://auth0:3000
-      AUTH0_OWNER_SUBJECT: auth0|ada.north
+      AUTH0_OWNER_SUBJECT: auth0|6728f0a1b2c3d4e5f6789012
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,3 +67,10 @@ services:
 
 volumes:
   northwharf-pg:
+
+networks:
+  default:
+    name: northwharf-demo
+    ipam:
+      config:
+        - subnet: 10.250.28.0/24

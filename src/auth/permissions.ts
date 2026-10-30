@@ -1,4 +1,4 @@
-export const ownerSubject = "auth0|ada.north";
+export const ownerSubject = "auth0|6728f0a1b2c3d4e5f6789012";
 
 export const accessPermissions = [
   "accounts:read",

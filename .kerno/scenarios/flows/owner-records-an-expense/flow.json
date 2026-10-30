@@ -1,0 +1,17 @@
+{
+    "id": "owner-records-an-expense",
+    "description": "As the owner Ada North, record an expense and see it in the expense list.",
+    "steps": [
+        {
+            "method": "TOOL",
+            "path": "create_expense",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "list_expenses",
+            "role": "subject"
+        }
+    ],
+    "outcome": "The expense Ada just recorded appears in Northwharf Ltd's expense list."
+}

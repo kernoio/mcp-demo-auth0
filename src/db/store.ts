@@ -77,6 +77,37 @@ export type CardView = {
 
 const roles = ["owner", "finance", "cardholder"] as const;
 
+export async function memberExists(db: Database, subject: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: members.id })
+    .from(members)
+    .where(eq(members.authSubject, subject))
+    .limit(1);
+  return rows.length > 0;
+}
+
+export async function provisionOwnerMember(
+  db: Database,
+  input: { subject: string; email: string; displayName: string },
+): Promise<void> {
+  const rows = await db.select({ id: organizations.id }).from(organizations);
+  const organization = rows.length === 1 ? rows[0] : undefined;
+  if (!organization) {
+    throw new DomainError(
+      "invalid_state",
+      rows.length === 0 ? "Northwharf has no organization yet" : "Northwharf has more than one organization",
+    );
+  }
+  await db.insert(members).values({
+    id: randomUUID(),
+    organizationId: organization.id,
+    authSubject: input.subject,
+    email: input.email,
+    displayName: input.displayName,
+    role: "owner",
+  });
+}
+
 export async function findMember(db: Database, subject: string): Promise<MemberView> {
   const rows = await db
     .select({

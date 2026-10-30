@@ -1,0 +1,72 @@
+# Requires Red Hat YAML extension: https://open-vsx.org/extension/redhat/vscode-yaml
+# Kerno setup: https://kerno.gitbook.io/docs/user-manual/setup-kerno-mcp
+# JSON Schema for editors: GET /config/schema?variant=workspace on the running agent
+calibration:
+  status: "calibrated"
+  recorded-at: "2026-10-29T15:08:03.059816759Z"
+  note: "Owner password grant, full-scope MCP token, pnpm db:seed, no cross-tool write gates, single organization, Postgres direct, local Auth0 issuer"
+  targets:
+    auth: "done"
+    api_token: "done"
+    seeding: "done"
+    write_landmines: "done"
+    tenancy: "skipped"
+    infrastructure: "done"
+test-generation:
+  context: |
+    Northwharf is a Streamable HTTP MCP server. sut_url is the MCP endpoint. Every tools/call needs Authorization: Bearer. Kerno sends MCP_AUTH_HEADERS from .kerno/.env, and only to the sut_url host.
+
+    Authentication, verified against this instance:
+    - Seeded owner Ada North, email ada.north@northwharf.example, subject auth0|6728f0a1b2c3d4e5f6789012, role owner, organization Northwharf Ltd (10000000-0000-4000-8000-000000000001).
+    - The password is AUTH0_OWNER_PASSWORD and the management client secret is AUTH0_MGMT_CLIENT_SECRET. Both values live only in .kerno/.env. The client id is AUTH0_MGMT_CLIENT_ID.
+    - Mint the user access token with AuthClient from @auth0/auth0-auth-js, calling getTokenByPassword. Do not POST /oauth/token by hand and do not use mintJwt. Read AUTH0_DOMAIN (hostname only: localhost:3000), AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE, AUTH0_TEST_USERNAME, and AUTH0_TEST_PASSWORD. Pass customFetch that rewrites https://AUTH0_DOMAIN to http://AUTH0_DOMAIN before fetch, because AuthClient always builds https URLs and this issuer is HTTP on port 3000. Authenticate in arrange, then send Authorization: Bearer. Do not report that rewrite as BLOCKED.
+    - The token scope is the full owner set: accounts:read, transfers:write, expenses:read, expenses:write, invoices:read, invoices:pay, cards:read, cards:manage, treasury:read.
+    - The local issuer expires access tokens after 3600 seconds. Remint with the same password grant and replace MCP_AUTH_HEADERS.
+
+    Seeding, verified:
+    - pnpm db:seed runs src/cli/seed.ts. docker compose up applies migrations and loads that seed on startup.
+    - The seed inserts Northwharf Ltd and returns without changes when that organization already exists.
+    - docker compose down -v is what makes the next start load the seed again.
+    - The live organization row is 10000000-0000-4000-8000-000000000001, Northwharf Ltd.
+
+    Writes:
+    - No plan, quota, rate limit, or lockout rejects a write regardless of the tool.
+    - A missing or invalid bearer is HTTP 401. A subject that is not a member is HTTP 403. A member without the tool's permission is an MCP tool error.
+    - create_expense as the owner returned 200.
+
+    Tenancy: one organization. No second tenant.
+
+    Infrastructure:
+    - Postgres is direct. Scenarios use DATABASE_URL from .kerno/.env, which points at the same database the running app uses (host 127.0.0.1, port 5433, database northwharf).
+    - The local Auth0 issuer is infrastructure.auth0, base URL http://localhost:3000. Issuer settings live on that block. Secret values stay in .kerno/.env. The app fetches keys from AUTH0_JWKS_URL.
+applications:
+  mcp-demo-auth0-7e3ets:
+    target-environment: "local"
+    sut:
+      input-url: "http://localhost:8080/mcp"
+    http-services:
+      auth0:
+        base-url: "http://localhost:3000"
+    postgres:
+      DATABASE_URL: ""
+    infrastructure:
+      auth0:
+        access: "direct"
+        env:
+          AUTH0_AUDIENCE: "http://localhost:8080/mcp"
+          AUTH0_CLIENT_ID: "northwharf-management"
+          AUTH0_CLIENT_SECRET: ""
+          AUTH0_DOMAIN: "localhost:3000"
+          AUTH0_ISSUER: "http://localhost:3000"
+          AUTH0_JWKS_URL: "http://127.0.0.1:3000/.well-known/jwks.json"
+          AUTH0_MGMT_CLIENT_ID: "northwharf-management"
+          AUTH0_MGMT_CLIENT_SECRET: ""
+          AUTH0_OWNER_EMAIL: "ada.north@northwharf.example"
+          AUTH0_OWNER_PASSWORD: ""
+          AUTH0_OWNER_SUBJECT: "auth0|6728f0a1b2c3d4e5f6789012"
+          AUTH0_TEST_PASSWORD: ""
+          AUTH0_TEST_USERNAME: "ada.north@northwharf.example"
+      postgres:
+        access: "direct"
+        env:
+          DATABASE_URL: ""

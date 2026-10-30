@@ -1,0 +1,22 @@
+{
+    "id": "owner-pays-a-supplier-invoice",
+    "description": "As the owner Ada North, pay a supplier invoice and read it back as paid.",
+    "steps": [
+        {
+            "method": "TOOL",
+            "path": "list_invoices",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "pay_invoice",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "get_invoice",
+            "role": "subject"
+        }
+    ],
+    "outcome": "The supplier invoice reads as paid."
+}

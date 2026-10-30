@@ -1,0 +1,112 @@
+{
+    "scenarios": [
+        {
+            "id": "owner-moves-money-between-accounts",
+            "guidance": "This scenario is the flow itself — it walks the journey end-to-end and is what Kerno calibrates on. It must not be removed.\n\nThe owner Ada North moves a small positive GBP amount from the seeded GBP operating account (`10000000-0000-4000-8000-000000000021`) to the seeded GBP tax reserve (`10000000-0000-4000-8000-000000000022`) and then re-reads the account list to confirm the money actually left one account and arrived in the other. Arrange mints Ada's access token with `AuthClient.getTokenByPassword` from `@auth0/auth0-auth-js` (env: `AUTH0_DOMAIN` hostname-only `localhost:3000`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`, `AUTH0_TEST_USERNAME`, `AUTH0_TEST_PASSWORD`), passing a `customFetch` that rewrites `https://<AUTH0_DOMAIN>` to `http://<AUTH0_DOMAIN>` before fetching — the local issuer is HTTP-only on port 3000, the rewrite is required, and it must never be reported as BLOCKED or replaced by `mintJwt`/`MCP_AUTH_HEADERS`. Every MCP `tools/call` then sends `Authorization: Bearer <token>`.\n\nStep 1 (`list_accounts`) is setup: it captures the two accounts' `balanceMinor` before the move — nothing else about that response is pinned beyond it succeeding and carrying both account ids. Step 2 (`create_transfer`) is the mutation: the flow needs its `transferGroupId` and the echoed amount; it must not be re-litigated as a full contract test. Step 3 (`list_accounts`) is the endpoint this flow is ABOUT — its response is accounted for in full, and it is where the business outcome is asserted: the source account's `balanceMinor` is exactly the pre-balance minus the moved amount, and the destination's is exactly its pre-balance plus the moved amount.\n\nChoose a small positive integer amount in minor units (e.g. 1–5000) that is well below the seeded operating balance so the transfer can never be rejected for insufficient funds, and give the transfer a unique per-run `description` (e.g. containing a UUID) so the ledger rows this run created can be found unambiguously on a shared database. The flow also reads Postgres directly via `process.env.DATABASE_URL` to prove the ledger pair was posted — one `transfer_out` on the source and one `transfer_in` on the destination sharing the returned `transferGroupId`. Do not mutate or delete seeded ledger state in cleanUp beyond closing the DB connection: the transfer is a real, non-reversible ledger movement and later runs tolerate it because every assertion is relative to the balances this run observed, not to absolute seeded values.",
+            "status": "keep",
+            "spec": {
+                "id": "owner-moves-money-between-accounts",
+                "title": "The owner moves a small GBP amount between two of her organization's accounts and sees the new balances",
+                "kind": "happy_path",
+                "preconditions": [
+                    "The Northwharf MCP server is reachable at the SUT base URL and answers `tools/call` requests.",
+                    "An access token for Ada North is minted via `AuthClient.getTokenByPassword` (with the `https`→`http` `customFetch` rewrite for the local issuer) and carries `accounts:read` and `transfers:write`.",
+                    "The seed is loaded: the GBP operating account `10000000-0000-4000-8000-000000000021` and the GBP tax reserve `10000000-0000-4000-8000-000000000022` both exist in organization `10000000-0000-4000-8000-000000000001` with currency `GBP`, and the operating account's balance exceeds the small amount this run moves."
+                ],
+                "trigger": "MCP `tools/call` for `create_transfer` with `{ fromAccountId: \"10000000-0000-4000-8000-000000000021\", toAccountId: \"10000000-0000-4000-8000-000000000022\", amountMinor: <small positive integer>, description: \"flow-transfer <uuid>\" }`, sent as `Authorization: Bearer <Ada's access token>`, sandwiched between a `list_accounts` call before and a `list_accounts` call after.",
+                "mainSuccessScenario": [
+                    "`TOOL list_accounts` — call it with Ada's bearer token and record the pre-move `balanceMinor` of the GBP operating account and of the GBP tax reserve from the returned `accounts` array.",
+                    "`TOOL create_transfer` — move the chosen small positive `amountMinor` from the operating account to the tax reserve with the unique per-run `description`; record the returned `transferGroupId`.",
+                    "`TOOL list_accounts` — call it again with the same token and read the post-move `accounts` array; this is the step the flow is about."
+                ],
+                "postconditions": [
+                    "Step 1 (`list_accounts`, fixture): the call succeeds — the MCP result is not an error (`isError` is not true) and its parsed `accounts` array contains one entry for `10000000-0000-4000-8000-000000000021` and one for `10000000-0000-4000-8000-000000000022`, each with a numeric `balanceMinor`, which are the values later steps consume.",
+                    "Step 2 (`create_transfer`, fixture): the call succeeds — the MCP result is not an error — and its parsed payload carries `amountMinor` equal to the amount sent, `currency` `\"GBP\"`, and a `transferGroupId` that is a UUID string, which step 3's ledger read-back consumes.",
+                    "Step 3 response envelope: the MCP `tools/call` HTTP response status is 200 and the result's `isError` is not true; `content` is an array whose single entry has `type` `\"text\"` and a `text` string that parses as JSON.",
+                    "Step 3 body — top-level shape: the parsed payload has exactly one key, `accounts`, whose value is an array.",
+                    "Step 3 body — per-account field accounting: every entry of `accounts` has exactly the fields `id`, `name`, `currency`, `balanceMinor` and no others; `id` is a UUID string, `name` is a non-empty string, `currency` is one of `\"GBP\"`, `\"EUR\"`, `\"USD\"`, and `balanceMinor` is an integer (`Number.isInteger`).",
+                    "Step 3 body — ordering: the `accounts` entries are in ascending order of `name` (the handler orders by `accounts.name` ascending).",
+                    "Step 3 body — THE OUTCOME, source: the entry whose `id` is `10000000-0000-4000-8000-000000000021` has `balanceMinor` exactly equal to the step‑1 operating-account `balanceMinor` minus the `amountMinor` sent — the money left the source account.",
+                    "Step 3 body — THE OUTCOME, destination: the entry whose `id` is `10000000-0000-4000-8000-000000000022` has `balanceMinor` exactly equal to the step‑1 tax-reserve `balanceMinor` plus the `amountMinor` sent — the money arrived in the destination account.",
+                    "Step 3 body — identity of the two accounts: the source entry's `currency` is `\"GBP\"` and the destination entry's `currency` is `\"GBP\"` (the transfer stayed inside one currency).",
+                    "Step 3 body — nothing else moved: the entry ids returned in step 3 are the same set of ids returned in step 1, and every account other than the two in the transfer has the same `balanceMinor` in step 3 as it had in step 1.",
+                    "Persisted ledger (direct Postgres read by `transferGroupId` returned in step 2): exactly two `transactions` rows exist for that `transfer_group_id`; one has `account_id` = `…021`, `kind` = `transfer_out`, `counterparty_account_id` = `…022`; the other has `account_id` = `…022`, `kind` = `transfer_in`, `counterparty_account_id` = `…021`; both have `amount_minor` equal to the amount sent, `currency` `GBP`, `organization_id` `10000000-0000-4000-8000-000000000001`, and `description` equal to the unique per-run description sent.",
+                    "Persisted balances (direct Postgres read of `accounts`): the `balance_minor` of `…021` equals the step‑3 response value for that account, and the `balance_minor` of `…022` equals the step‑3 response value for that account — the response reflects committed state, not a computed view.",
+                    "Response headers of the step‑3 `tools/call` response match the observed baseline: `Content-Type` as observed (the MCP Streamable HTTP transport's JSON or SSE content type), and `Cache-Control`, `Vary`, `Set-Cookie`, `Access-Control-Allow-Origin`, `Content-Security-Policy`, `Strict-Transport-Security`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy` pinned to the values observed on this run — each pinned as absent if the server does not send it. Do not assert `Date`, `Content-Length`, `ETag`, `Server`, or any request/trace id header."
+                ],
+                "primaryActor": "Ada North, the seeded owner of Northwharf Ltd (subject `auth0|6728f0a1b2c3d4e5f6789012`)",
+                "scope": "FLOW owner-moves-money-between-accounts (TOOL list_accounts → TOOL create_transfer → TOOL list_accounts)",
+                "minimalGuarantees": [],
+                "cleanup": [
+                    "Close the Postgres connection (`await db.end().catch(() => {})`); do not reverse the transfer — the ledger movement is real and every assertion is relative to the balances this run read in step 1."
+                ],
+                "notes": "The response shape for both tools is derived from `src/db/store.ts` (`listAccounts`/`toAccount` → `{ id, name, currency, balanceMinor }`; `createTransfer` → `{ transferGroupId, currency, amountMinor, from, to }`) and `src/mcp/server.ts` (`perform` wraps the value as `content: [{ type: \"text\", text: JSON.stringify(value, null, 2) }]`). `balanceMinor` is a drizzle `bigint` in `mode: \"number\"`, so it serializes as a JSON number. The flow runs against shared seeded accounts, so all balance assertions are deltas against the step‑1 reading rather than absolute seeded values — that is what keeps it repeatable and parallel-safe.",
+                "requiredDependencies": [
+                    "database"
+                ]
+            },
+            "kind": "happy_path"
+        }
+    ],
+    "precondition": {
+        "description": "The Northwharf MCP server is deployed and reachable as a Streamable HTTP MCP endpoint at the SUT base URL (`sut_url`, the `/mcp` mount), answering `tools/call` requests with `content-type: application/json` and `accept: application/json, text/event-stream`.\n\nThe local Auth0 issuer is reachable at `http://AUTH0_DOMAIN` (hostname only, `localhost:3000`) and the password grant works for the seeded owner: an access token for Ada North can be minted with `AuthClient.getTokenByPassword` from `@auth0/auth0-auth-js`, passing a `customFetch` that rewrites `https://<AUTH0_DOMAIN>` to `http://<AUTH0_DOMAIN>` before calling fetch (the issuer is HTTP-only on port 3000; this rewrite is required and is not a BLOCKED condition). Required env vars: `AUTH0_DOMAIN`, `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, `AUTH0_AUDIENCE`, `AUTH0_TEST_USERNAME`, `AUTH0_TEST_PASSWORD`. The minted token's subject is `auth0|6728f0a1b2c3d4e5f6789012` and carries the full owner permission set (including `accounts:read` and `transfers:write`).\n\nThe Northwharf Ltd seed is loaded: organization `10000000-0000-4000-8000-000000000001` exists with member Ada North and the GBP operating account `10000000-0000-4000-8000-000000000021` and GBP tax reserve `10000000-0000-4000-8000-000000000022`, both in `GBP`, with the operating account holding at least the small amount the flow moves.\n\n`process.env.DATABASE_URL` points at the same Postgres database the running app uses, so the ledger can be read back directly.",
+        "state": "editing",
+        "spec": null
+    },
+    "testGenerationContext": "## The user flow under test\n\nAs the owner Ada North, move money between two accounts of the same currency.\n\n### The outcome that must hold at the end\n\nThe amount has left the source account and arrived in the destination account.\n\nRead this back from the system in the flow's last step and assert it. A flow that only checks the status code of its last call has not tested the thing the user named.\n\n### The endpoints it crosses, in order\n\n1. `TOOL list_accounts`\n2. `TOOL create_transfer`\n3. `TOOL list_accounts`\n\nImplement one `ctx.step(...)` per entry, in this order, carrying values between them in local variables. The final entry is the endpoint the flow is ABOUT; the ones before it are setup that must succeed for it to mean anything.\n\n### Additional guidance\n\nActor is the seeded owner Ada North. Mint her access token with AuthClient from @auth0/auth0-auth-js by calling getTokenByPassword. Do not POST /oauth/token by hand and do not use mintJwt. Read AUTH0_DOMAIN (localhost:3000, hostname only), AUTH0_CLIENT_ID, AUTH0_CLIENT_SECRET, AUTH0_AUDIENCE, AUTH0_TEST_USERNAME, and AUTH0_TEST_PASSWORD. Pass customFetch that rewrites a request URL from https://AUTH0_DOMAIN to http://AUTH0_DOMAIN before calling fetch. AuthClient always builds https URLs and this issuer is HTTP on port 3000. That rewrite is required. Do not report it as BLOCKED and do not fall back to MCP_AUTH_HEADERS. Authenticate in arrange, then send Authorization: Bearer on every MCP tools/call. Use the GBP operating account 10000000-0000-4000-8000-000000000021 and the GBP tax reserve 10000000-0000-4000-8000-000000000022. Move a small positive amount. The first list_accounts is setup. The second list_accounts reads the new balances.",
+    "coverage": {
+        "state": "declared",
+        "parameters": [
+            {
+                "parameter": "fromAccountId",
+                "source": "body",
+                "scenarios": [
+                    "owner-moves-money-between-accounts"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "toAccountId",
+                "source": "body",
+                "scenarios": [
+                    "owner-moves-money-between-accounts"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "amountMinor",
+                "source": "body",
+                "scenarios": [
+                    "owner-moves-money-between-accounts"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "description",
+                "source": "body",
+                "scenarios": [
+                    "owner-moves-money-between-accounts"
+                ],
+                "gapReason": null,
+                "values": [],
+                "uncoveredValues": []
+            },
+            {
+                "parameter": "Authorization",
+                "source": "header",
+                "scenarios": [
+                    "owner-moves-money-between-accounts"
+                ],
+                "gapReason": "this subject is a user flow; a single scenario is emitted, so the missing/invalid-bearer and unpermitted-member branches are not exercised here and belong to per-tool endpoint plans",
+                "values": [],
+                "uncoveredValues": []
+            }
+        ]
+    }
+}

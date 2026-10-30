@@ -6,7 +6,6 @@ export type AppConfig = {
   authIssuer: string;
   authAudience: string;
   authJwksUrl: string;
-  authBaseUrl: string;
   ownerSubject: string;
 };
 
@@ -14,10 +13,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   return {
     port: readPort(env.PORT),
     databaseUrl: required(env, "DATABASE_URL"),
-    authIssuer: required(env, "AUTH0_ISSUER"),
+    authIssuer: firstPresent(env, ["AUTH0_ISSUER", "AUTH0_ISSUER_BASE_URL"]),
     authAudience: required(env, "AUTH0_AUDIENCE"),
     authJwksUrl: required(env, "AUTH0_JWKS_URL"),
-    authBaseUrl: required(env, "AUTH0_BASE_URL"),
     ownerSubject: env.AUTH0_OWNER_SUBJECT?.trim() || ownerSubject,
   };
 }
@@ -28,6 +26,16 @@ function required(env: NodeJS.ProcessEnv, name: string): string {
     throw new Error(`Missing ${name}`);
   }
   return value;
+}
+
+function firstPresent(env: NodeJS.ProcessEnv, names: readonly string[]): string {
+  for (const name of names) {
+    const value = env[name]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  throw new Error(`Missing ${names.join(" or ")}`);
 }
 
 function readPort(value: string | undefined): number {

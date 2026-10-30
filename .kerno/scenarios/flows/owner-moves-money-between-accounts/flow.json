@@ -1,0 +1,22 @@
+{
+    "id": "owner-moves-money-between-accounts",
+    "description": "As the owner Ada North, move money between two accounts of the same currency.",
+    "steps": [
+        {
+            "method": "TOOL",
+            "path": "list_accounts",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "create_transfer",
+            "role": "setup"
+        },
+        {
+            "method": "TOOL",
+            "path": "list_accounts",
+            "role": "subject"
+        }
+    ],
+    "outcome": "The amount has left the source account and arrived in the destination account."
+}
