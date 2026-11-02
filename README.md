@@ -52,11 +52,35 @@ Kerno is already configured for this repository. With Northwharf running:
 
 4. Connect the MCP server with the snippet `kerno init` prints, in Cursor, Claude Code, or Codex. Start a new chat so the tools load.
 
-5. Ask a question, for example:
+5. Paste a prompt from [Prompts](#prompts).
 
-   > Freeze a debit card, then read it back as frozen.
+## Prompts
 
-   You can ask the same way to read the cash position, move money between two accounts of the same currency, record an expense and see it in the list, pay a supplier invoice and read it back as paid, or change a debit card limit and read the card back.
+Six owner flows are already saved. Northwharf has to be running, and the Kerno tools have to be connected. Paste one of these into the chat.
+
+**See the flows**
+
+> Show me the user flows Kerno has saved for Northwharf, and what each one checks.
+
+That is the cash position, a transfer, an expense, a supplier invoice, a card limit, and freezing a card.
+
+**Check they still match**
+
+> Validate those flows against the running app, and tell me which ones still match.
+
+**See a failed sign-in**
+
+> Reject a valid owner access token, then validate the flows and explain what no longer matches.
+
+The journeys that need Ada's token show a diff. To undo it:
+
+> Accept owner access tokens again, then validate the flows and confirm they match.
+
+**Run one journey**
+
+> As Ada North, freeze a debit card, then read it back as frozen.
+
+Ask the same way about the cash position, a transfer between two accounts in the same currency, recording an expense, paying a supplier invoice, or changing a card limit.
 
 ## Set up a similar repository
 
